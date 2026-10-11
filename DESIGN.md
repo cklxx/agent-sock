@@ -410,24 +410,22 @@ Session (1:1 agent) → Window (1:1 task) → Pane (1:1 worker)
 - `ControlModeEventSource`（二期插槽）：`tmux -C` 解析 `%output`，实时事件。
 - control mode 告诉"何时变"，capture-pane 告诉"现在何样"。
 
-### 4.4 编译式交互（`tmux_compile`）
+### 4.4 编译式交互（`tmux_compile`，已迁至 cklxx/fx）
 
 §5"烧录"在 tmux 域的具体实现：把 YAML 描述的多轮 pane 交互编译成自包含
 bash 产物（§5.2 目标 A 的实例化）。LLM 只做一次编译决策，执行零 LLM 参与。
 
-- 编译器 `tmux_compile/`：`run`（单/多行）/ `wait_for` / `branch`（文本分支）
-  / `parallel`（多 pane 并行 + join）/ `fail`；`{{param}}` 编译期展开。
-- 产物契约：exit 0/10/11/12/13/14（见 `TMUX_COMPILE_GUIDE.md` §4），
-  报错精确到步骤（`COMPILE-FAIL [leg=L ]step=N reason=...`）。
-- 运行模式：`TSOCK`+`PANE`（独立，`tmux -L`）或
-  `TMUX_SOCK_PATH`+`PANE`（agent_sock 驱动，`tmux -S`，见 `agent_sock/tmux_compile.py`）。
-- 暴露：`python3 -m tmux_compile`（独立 CLI）、`asock tmux-compile`
- （驱动到 agent pane）、`agent_sock.tmux_compile.compile_and_run`（Python API）。
-- 与 `tmux_tool` 的关系：单向。产物直调 tmux CLI，不依赖 agent_sock；
-  agent_sock 是驱动侧。需要 LLM 临场判断的步骤不进编译，走 `tmux_tool`。
-- 已知限制：交互式程序不编译、`parallel` 不嵌套、无循环原语、失败不回滚、
-  分支匹配含命令回显（marker 写法见 GUIDE §6.1）。完整清单见
-  `TMUX_COMPILE_ANALYSIS.md` 与 `TMUX_COMPILE_GUIDE.md` §7。
+**位置**：编译器已迁至 cklxx/fx 的 `tools/tmux_compile/`（fx 性能项目的一
+部分，见该目录 README）。agent-sock 只保留驱动侧：
+
+- `agent_sock/tmux_compile.py` — `compile_and_run()`，产物跑在 agent pane 上。
+  依赖 fx 的 `tmux_compile` 包（PYTHONPATH 指向 fx 的 tools/tmux_compile）。
+- `asock tmux-compile` — 驱动到 agent pane 的 CLI。
+- `tests/test_tmux_compile_integration.sh` — 驱动层集成测试。
+
+编译器能力（`run`/`wait_for`/`branch`/`parallel`/`retry`/`fail`、`{{param}}`
+展开）与产物契约（exit 0/10/11/12/13/14/15）见 fx 侧
+`tools/tmux_compile/docs/TMUX_COMPILE_GUIDE.md`。
 
 ---
 

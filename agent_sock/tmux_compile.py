@@ -1,14 +1,18 @@
 """tmux_compile driver: compile a YAML interaction, run it on an agent's pane.
 
+The tmux_compile compiler is an external dependency: it lives in cklxx/fx
+at tools/tmux_compile/ (part of the fx performance project). Put that
+directory on PYTHONPATH so `tmux_compile.compiler` is importable.
+
 Relationship with tmux_tool (one-directional):
   - tmux_compile products are standalone bash. They call the tmux CLI
-    directly and never import agent_sock. Zero dependencies by design
-    (TMUX_COMPILE_ANALYSIS.md: honest boundaries).
+    directly and never import agent_sock. Zero dependencies by design.
   - This module is the driver side: compile the DSL, then run the product
     with TMUX_SOCK_PATH pointed at the agent's tmux server and PANE at the
     agent's pane. The product's -S path mode exists for exactly this.
 
-When to use this vs TmuxTool directly (see TMUX_COMPILE_GUIDE.md):
+When to use this vs TmuxTool directly (see the guide in cklxx/fx
+tools/tmux_compile/docs/TMUX_COMPILE_GUIDE.md):
   - compile_and_run: deterministic multi-step flows (deploy checks, bisect,
     review loops). Compile once, run many times; failures name the step.
   - TmuxTool.run/capture: ad-hoc commands, or steps needing LLM judgment
@@ -34,7 +38,9 @@ def _load_compiler():
         from tmux_compile.compiler import compile_dsl, CompileError
     except ImportError as e:
         raise errors.make(
-            "ACOM-1001", f"tmux_compile package not importable: {e}"
+            "ACOM-1001",
+            f"tmux_compile package not importable: {e}. "
+            "It lives in cklxx/fx tools/tmux_compile/; add that to PYTHONPATH.",
         )
     return compile_dsl, CompileError
 

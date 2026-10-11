@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Integration test: drive the bug-hunt story through agent_sock
 # (asock tmux-compile -> TmuxTool -> TMUX_SOCK_PATH product mode).
+#
+# The tmux_compile compiler lives in cklxx/fx (tools/tmux_compile).
+# FX_TMUX_COMPILE overrides its location; default is the fx-fork checkout.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+ROOT="$(cd "$HERE/.." && pwd)"
+FXTC="${FX_TMUX_COMPILE:-$HOME/workspace/fx-fork/tools/tmux_compile}"
+export PYTHONPATH="$ROOT:$FXTC${PYTHONPATH:+:$PYTHONPATH}"
 WORK=/tmp/tc-stories/bug-hunt
 
-bash "$HERE/bug-hunt/setup.sh" >/dev/null || { echo "FAIL integration: setup"; exit 1; }
+[ -f "$FXTC/examples/bug-hunt/dsl.yaml" ] || { echo "FAIL integration: tmux_compile not found at $FXTC (set FX_TMUX_COMPILE)"; exit 1; }
+
+bash "$FXTC/examples/bug-hunt/setup.sh" >/dev/null || { echo "FAIL integration: setup"; exit 1; }
 
 out=$(python3 -m agent_sock.cli tmux-compile \
-  --file "$HERE/bug-hunt/dsl.yaml" \
+  --file "$FXTC/examples/bug-hunt/dsl.yaml" \
   --agent tc-bughunt \
   --param repo="$WORK/repo" \
   --timeout 300 2>/tmp/tc-int.err)
