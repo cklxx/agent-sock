@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import time
 import uuid
 
 from . import errors
+from . import osc7501
 
 TMUX_SOCK = os.path.expanduser("~/.agent-sock/tmux.sock")
 SNAPSHOT_DIR = os.path.expanduser("~/.agent-sock/snapshots")
+STATUS_DIR = os.path.expanduser("~/.agent-sock/status")
+HELPER_PATH = os.path.expanduser("~/.agent-sock/osc7501.sh")
+STATUS_ENV = "ASOCK_7501_FILE"
 
 
 def _tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -45,6 +50,16 @@ class TmuxTool:
         except FileNotFoundError:
             raise errors.make("ATMUX-1001", "tmux not installed")
 
+    def _run_raw(self, *args: str, check: bool = True) -> bytes:
+        """Bytes variant: preserves escape sequences (no text decoding)."""
+        cmd = ["tmux", "-S", self.sock, *args]
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=30,
+                               check=check)
+        except FileNotFoundError:
+            raise errors.make("ATMUX-1001", "tmux not installed")
+        return r.stdout
+
     def _ensure_server(self):
         r = self._run("start-server", check=False)
         if r.returncode != 0 and "no server" not in r.stderr.lower():
@@ -52,8 +67,13 @@ class TmuxTool:
 
     # ---- agent 生命周期
 
-    def spawn_agent(self, agent_id: str, cmd: str) -> str:
-        """建 session，起 agent 进程。返回 session 名。"""
+    def spawn_agent(self, agent_id: str, cmd: str,
+                    status: bool = False) -> str:
+        """建 session，起 agent 进程。返回 session 名。
+
+        status=True 时启用 OSC 7501 状态通道：建 sidecar 文件并把
+        ASOCK_7501_FILE 注入 pane 环境（见 agent_status）。
+        """
         self._ensure_server()
         session = _session_name(agent_id)
         # 已存在则先杀
@@ -64,6 +84,10 @@ class TmuxTool:
                 "launch_cmd": cmd, "created_at": time.time()}
         with open(os.path.join(SNAPSHOT_DIR, f"{agent_id}.meta"), "w") as f:
             json.dump(meta, f)
+        if status:
+            path = self.status_file(agent_id)
+            open(path, "w").close()  # truncate/create
+            cmd = f"{STATUS_ENV}={shlex.quote(path)} {cmd}"
         # 在首个 window 跑命令（确定性同步由调用方 run 保证）
         self._run("send-keys", "-t", f"{session}:0", cmd, "Enter")
         return session
@@ -102,6 +126,65 @@ class TmuxTool:
         r = self._run("capture-pane", "-p", "-t", target,
                       "-S", f"-{lines}")
         return r.stdout
+
+    def capture_raw(self, target: str, lines: int = 200) -> bytes:
+        """原始捕获：保留转义序列（含 OSC）。bytes 返回，不做文本解码。"""
+        return self._run_raw("capture-pane", "-e", "-p", "-t", target,
+                             "-S", f"-{lines}")
+
+    # ---- OSC 7501 程序状态（Program Status Protocol）
+
+    def status_file(self, agent_id: str) -> str:
+        """sidecar 文件路径。tmux 吞掉未知 OSC（实测），pane 缓冲区里
+        看不到 OSC 7501；可靠通道是 emitter 双写的文件。"""
+        os.makedirs(STATUS_DIR, exist_ok=True)
+        return os.path.join(STATUS_DIR, f"{agent_id}.osc7501")
+
+    @staticmethod
+    def install_shell_helper() -> str:
+        """写 ~/.agent-sock/osc7501.sh（asock_emit_status 函数）。返回路径。"""
+        os.makedirs(os.path.dirname(HELPER_PATH), exist_ok=True)
+        with open(HELPER_PATH, "w") as f:
+            f.write(osc7501.shell_helper())
+        return HELPER_PATH
+
+    def _agent_id_from_target(self, target: str) -> str | None:
+        """从 target 反推 agent_id。session 名形如 asock-<agent_id>。"""
+        if target.startswith("asock-"):
+            rest = target[len("asock-"):]
+            return rest.split(":")[0].split(".")[0] or None
+        if target.startswith("@") or target.startswith("%"):
+            r = self._run("display-message", "-p", "-t", target,
+                          "#{session_name}", check=False)
+            if r.returncode == 0:
+                return self._agent_id_from_target(r.stdout.strip())
+        return None
+
+    def agent_status(self, target: str) -> dict | None:
+        """读 agent 的 OSC 7501 状态。返回结构化状态或 None（无记录）。
+
+        两路合并：pane 输出解析（pty 保留序列时有效）+ sidecar 文件
+        （tmux 下的可靠通道）。后读到的报告覆盖同 id 记录。
+        返回 {"records": [{"id","state","kind","progress","app","title","msg"}]}，
+        root 在前，app 已按层级继承解析。
+        """
+        store = osc7501.RecordStore()
+        try:
+            store.ingest(self.capture_raw(target))
+        except Exception:
+            pass
+        agent_id = self._agent_id_from_target(target)
+        if agent_id is not None:
+            path = os.path.join(STATUS_DIR, f"{agent_id}.osc7501")
+            if os.path.exists(path):
+                try:
+                    with open(path, "rb") as f:
+                        store.ingest(f.read())
+                except OSError:
+                    pass
+        if len(store) == 0:
+            return None
+        return store.snapshot()
 
     def capture_since(self, target: str, cursor: int = 0,
                       lines: int = 500) -> tuple[str, int, bool]:
